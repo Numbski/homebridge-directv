@@ -5,12 +5,13 @@
 // Remember to add platform to config.json. Example:
 // "platforms": [
 //     {
-//         "platform": "Directv",				// required
-//         "name": "DTV",						// Optional - defaults to DTV
-//         "ip_address": "IP of Primary STB", 	// required
-//		   "exclude_geni": true,				// Optional - defaults to false
-//		   "min_channel": 1,					// Optional - defaults to 1
-//		   "max_channel": 575					// Optional - defaults to 575
+//         "platform": "Directv",                // required
+//         "name": "DTV",                        // Optional - defaults to DTV
+//         "ip_address": "IP of Primary STB",     // required
+//          "compatibility", "genie or legacy",  // Optional, defaults to genie.  Pre-genie is "legacy".
+//           "exclude_geni": true,                // Optional - defaults to false
+//           "min_channel": 1,                    // Optional - defaults to 1
+//           "max_channel": 575                    // Optional - defaults to 575
 //     }
 // ],
 //
@@ -22,17 +23,18 @@ var titleCase = require('title-case');
 var remote, min_ch, max_ch;
 
 function DirectvPlatform(log, config){
-	this.config = config;
-	this.ip_address = config["ip_address"];
-	this.name = config["name"] || 'DTV';
-	this.excludeGeni = config["exclude_geni"] || false;
-	min_ch = config["min_channel"] || 1;
-	max_ch = config["max_channel"] || 575;
-	this.log = log;
+    this.config = config;
+    this.ip_address = config["ip_address"];
+    this.name = config["name"] || 'DTV';
+        this.compatibility = config["compatibility"] || "genie";
+    this.excludeGeni = config["exclude_geni"] || false;
+    min_ch = config["min_channel"] || 1;
+    max_ch = config["max_channel"] || 575;
+    this.log = log;
 
-	if (!this.ip_address) throw new Error("DTV - You must provide a config value for 'ip_address'.");
+    if (!this.ip_address) throw new Error("DTV - You must provide a config value for 'ip_address'.");
 
-	remote = new DirecTV.Remote(this.ip_address);
+    remote = new DirecTV.Remote(this.ip_address);
 
 }
 
@@ -41,46 +43,59 @@ DirectvPlatform.prototype = {
         this.log("Fetching DTV locations.");
         var that = this;
         var foundAccessories = [];
+        var compatType = undefined;
+            // Handling of presumed compatibility types on
+            // /info/getLocations
+            if (that.compatibility="legacy") {
+                compatType=undefined;
+            }
+            else if (that.compatibility="genie") {
+                compatType=1;
+            }
+            else {
+                compatType=1;
+            }
+        remote.getLocations(that.compatType, function(err, response) {
+            if (!err) {
+                that.log( "Finding DTV Locations (accessories)...");
+                for(var i=0; i <response.locations.length; ++i){
+                    if ((!that.excludeGeni) || (response.locations[i].clientAddr == '0')) {
+                        that.log( "Found DTV Location %s", response.locations[i].locationName);
+                        var accessory = new DirectvSTBAccessory(that.log, response.locations[i], that.config);
+                        foundAccessories.push(accessory);
+                    } else {
+                        that.log( "Found DTV Location %s, but EXCLUDING per configuration setting.", response.locations[i].locationName);
+                    }
+                }
+                try {
+                    callback(foundAccessories);
+                }
+                catch(error) {
+                    that.log.debug('homebridge DTV Error', error);
+                }
+            } else {
+                that.log( "Failed to find any DTV Locations (accessories) - Check IP address in config.json!");
+                try {
+                    callback(null);
+                }
+                catch(error) {
+                    that.log.debug('homebridge DTV Error', error);
+                }
+            }
 
-		remote.getLocations('1', function(err, response) {
-			if (!err) {
-				that.log( "Finding DTV Locations (accessories)...");
-				for(var i=0; i <response.locations.length; ++i){
-					if ((!that.excludeGeni) || (response.locations[i].clientAddr == '0')) {
-						that.log( "Found DTV Location %s", response.locations[i].locationName);
-						var accessory = new DirectvSTBAccessory(that.log, response.locations[i], that.config);
-						foundAccessories.push(accessory);
-					} else {
-						that.log( "Found DTV Location %s, but EXCLUDING per configuration setting.", response.locations[i].locationName);
-					}
-				}
-				try {
-					callback(foundAccessories);
-				}
-				catch(error) {
-					that.log.debug('homebridge DTV Error', error);
-				}
-			} else {
-				that.log( "Failed to find any DTV Locations (accessories) - Check IP address in config.json!");
-				try {
-					callback(null);
-				}
-				catch(error) {
-					that.log.debug('homebridge DTV Error', error);
-				}
-			}
-        });
+            }
+        );
     }
 }
 
 function DirectvSTBAccessory(log, location, config) {
     // STB basic device info
     this.log = log;
-	this.config = config;
+    this.config = config;
     this.location = titleCase(location.locationName);
-	this.config_name = config["name"] || 'DTV';
-	this.name = this.location + ' ' + this.config_name;
-	this.ip_address = config["ip_address"];
+    this.config_name = config["name"] || 'DTV';
+    this.name = this.location + ' ' + this.config_name;
+    this.ip_address = config["ip_address"];
     this.clientAddr = location.clientAddr.toUpperCase();
 
 }
@@ -88,155 +103,157 @@ function DirectvSTBAccessory(log, location, config) {
 DirectvSTBAccessory.prototype = {
     getRemote: function(type, callback){
         var that = this;
-		switch(type) {
-			case "power":
-				remote.getMode(that.clientAddr, function (err, response) {
-					if (err || response.mode == "1") {
-						that.log.debug('DTV location %s power state is currently OFF or UNREACHABLE', that.location);
-						try {
-							callback(null, false);
-						}
-						catch(error) {
-							that.log.debug('homebridge DTV Error', error);
-						}
-						return;
-					} else if (response.mode == "0") {
-						that.log.debug('DTV location %s power state is currently ON', that.location);
-						try {
-							callback(null, true);
-						}
-						catch(error) {
-							that.log.debug('homebridge DTV Error', error);
-						}
-					}
-				});
-			break;
-			case "channel":
-				remote.getMode(that.clientAddr, function (err, response) {
-					if (err || response.mode == "1") {
-						that.log.debug('Unable to call for current channel at DTV location %s.', that.location);
-						try {
-							callback(null, parseInt("0"));
-						}
-						catch(error) {
-							that.log.debug('homebridge DTV Error', error);
-						}
-					} else if (response.mode == "0") {
-						remote.getTuned(that.clientAddr, function (err, response) {
-							if (!err) {
-								that.log.debug('DTV location %s current channel is %d', that.location, parseInt(response.major));
-								try {
-									callback(null, parseInt(response.major));
-								}
-								catch(error) {
-									that.log.debug('homebridge DTV Error', error);
-								}
-							} else {
-								that.log.debug('Unable to call for current channel at DTV location %s.', that.location);
-								try {
-									callback(null, parseInt("0"));
-								}
-								catch(error) {
-									that.log.debug('homebridge DTV Error', error);
-								}
-							}
-						});
-					}
-				});
-			break;
-		}
-	},
+        switch(type) {
+            case "power":
+                remote.getMode(that.clientAddr, function (err, response) {
+                    if (err || response.mode == "1") {
+                        that.log.debug('DTV location %s power state is currently OFF or UNREACHABLE', that.location);
+                        that.log.debug('DTV IP Address %s for location %s.', that.ip_address, that.location);
+                        that.log.debug('DTV clientAddr is %s for location %s.', that.clientAddr, that.location);
+                        try {
+                            callback(null, false);
+                        }
+                        catch(error) {
+                            that.log.debug('homebridge DTV Error', error);
+                        }
+                        return;
+                    } else if (response.mode == "0") {
+                        that.log.debug('DTV location %s power state is currently ON', that.location);
+                        try {
+                            callback(null, true);
+                        }
+                        catch(error) {
+                            that.log.debug('homebridge DTV Error', error);
+                        }
+                    }
+                });
+            break;
+            case "channel":
+                remote.getMode(that.clientAddr, function (err, response) {
+                    if (err || response.mode == "1") {
+                        that.log.debug('Unable to call for current channel at DTV location %s.', that.location);
+                        try {
+                            callback(null, parseInt("0"));
+                        }
+                        catch(error) {
+                            that.log.debug('homebridge DTV Error', error);
+                        }
+                    } else if (response.mode == "0") {
+                        remote.getTuned(that.clientAddr, function (err, response) {
+                            if (!err) {
+                                that.log.debug('DTV location %s current channel is %d', that.location, parseInt(response.major));
+                                try {
+                                    callback(null, parseInt(response.major));
+                                }
+                                catch(error) {
+                                    that.log.debug('homebridge DTV Error', error);
+                                }
+                            } else {
+                                that.log.debug('Unable to call for current channel at DTV location %s.', that.location);
+                                try {
+                                    callback(null, parseInt("0"));
+                                }
+                                catch(error) {
+                                    that.log.debug('homebridge DTV Error', error);
+                                }
+                            }
+                        });
+                    }
+                });
+            break;
+        }
+    },
     setRemote: function(type, value, callback){
         var that = this;
-		switch(type) {
-			case "power":
-				remote.getMode(that.clientAddr, function (err, response) {
-					var responseMode = response.mode;
-					if (err) { responseMode = "1"}
-					if (parseInt(responseMode) === parseInt(value ? 1 : 0)) {
-						remote.processKey('power', that.clientAddr, function(err, response) {
-							if (err) {
-								that.log.debug('Unable to change DTV location %s power state!', that.location);
-								try {
-								  callback(new Error("STB Process Power Error."), false);
-								}
-								catch(error) {
-									that.log.debug('homebridge DTV Error', error);
-								}
-								return;
-							} else {
-								that.log.debug('DTV location %s power state is now: %s', that.location, (value) ? 'ON' : 'OFF');
-								try {
-									callback();
-								}
-								catch(error) {
-									that.log.debug('homebridge DTV Error', error);
-								}
-							}
-						});
-					} else {
-						try {
-						  callback();
-						}
-						catch(error) {
-							that.log.debug('homebridge DTV Error', error);
-						}
-					}
-				});
-			break;
-			case "channel":
-				remote.getMode(that.clientAddr, function (err, response) {
-					if (err || response.mode == "1") {
-						that.log.debug('Unable to set channel at DTV location %s.', that.location);
-						try {
-						  callback();
-						}
-						catch(error) {
-							that.log.debug('homebridge DTV Error', error);
-						}
-					} else if (response.mode == "0") {
-						remote.tune(value, that.clientAddr, function(err, response) {
-							if (err) {
-								that.log.debug('Unable to set channel at DTV location %s', that.location);
-								try {
-									callback();
-								}
-								catch(error) {
-									that.log.debug('homebridge DTV Error', error);
-								}
-							} else {
-								that.log.debug('DTV location %s Channel is now: %s', that.location, value);
-								try {
-									callback();
-								}
-								catch(error) {
-									that.log.debug('homebridge DTV Error', error);
-								}
-							}
-						});
-					}
-				});
-			break;
-		}
+        switch(type) {
+            case "power":
+                remote.getMode(that.clientAddr, function (err, response) {
+                    var responseMode = response.mode;
+                    if (err) { responseMode = "1"}
+                    if (parseInt(responseMode) === parseInt(value ? 1 : 0)) {
+                        remote.processKey('power', that.clientAddr, function(err, response) {
+                            if (err) {
+                                that.log.debug('Unable to change DTV location %s power state!', that.location);
+                                try {
+                                  callback(new Error("STB Process Power Error."), false);
+                                }
+                                catch(error) {
+                                    that.log.debug('homebridge DTV Error', error);
+                                }
+                                return;
+                            } else {
+                                that.log.debug('DTV location %s power state is now: %s', that.location, (value) ? 'ON' : 'OFF');
+                                try {
+                                    callback();
+                                }
+                                catch(error) {
+                                    that.log.debug('homebridge DTV Error', error);
+                                }
+                            }
+                        });
+                    } else {
+                        try {
+                          callback();
+                        }
+                        catch(error) {
+                            that.log.debug('homebridge DTV Error', error);
+                        }
+                    }
+                });
+            break;
+            case "channel":
+                remote.getMode(that.clientAddr, function (err, response) {
+                    if (err || response.mode == "1") {
+                        that.log.debug('Unable to set channel at DTV location %s.', that.location);
+                        try {
+                          callback();
+                        }
+                        catch(error) {
+                            that.log.debug('homebridge DTV Error', error);
+                        }
+                    } else if (response.mode == "0") {
+                        remote.tune(value, that.clientAddr, function(err, response) {
+                            if (err) {
+                                that.log.debug('Unable to set channel at DTV location %s', that.location);
+                                try {
+                                    callback();
+                                }
+                                catch(error) {
+                                    that.log.debug('homebridge DTV Error', error);
+                                }
+                            } else {
+                                that.log.debug('DTV location %s Channel is now: %s', that.location, value);
+                                try {
+                                    callback();
+                                }
+                                catch(error) {
+                                    that.log.debug('homebridge DTV Error', error);
+                                }
+                            }
+                        });
+                    }
+                });
+            break;
+        }
     },
     getServices: function() {
         var that = this;
         var services = []
-		if (this.clientAddr == '0') {
-			this.service = new Service.Switch(this.name);
+        if (this.clientAddr == '0') {
+            this.service = new Service.Switch(this.name);
 
-			this.service.getCharacteristic(Characteristic.On)
-				.on('get', function(callback) { that.getRemote("power", callback);})
-				.on('set', function(value, callback) {that.setRemote("power", value, callback);});
-		} else {
-			this.service = new Service.MotionSensor(this.name);
+            this.service.getCharacteristic(Characteristic.On)
+                .on('get', function(callback) { that.getRemote("power", callback);})
+                .on('set', function(value, callback) {that.setRemote("power", value, callback);});
+        } else {
+            this.service = new Service.MotionSensor(this.name);
 
-			this.service.getCharacteristic(Characteristic.MotionDetected)
-				.on('get', function(callback) { that.getRemote("power", callback);});
-		}
-		this.service.addCharacteristic(ChannelCharacteristic)
-			.on('get', function(callback) { that.getRemote("channel", callback);})
-			.on('set', function(value, callback) {that.setRemote("channel", value, callback);});
+            this.service.getCharacteristic(Characteristic.MotionDetected)
+                .on('get', function(callback) { that.getRemote("power", callback);});
+        }
+        this.service.addCharacteristic(ChannelCharacteristic)
+            .on('get', function(callback) { that.getRemote("channel", callback);})
+            .on('set', function(value, callback) {that.setRemote("channel", value, callback);});
 
         services.push(this.service);
 
@@ -244,8 +261,8 @@ DirectvSTBAccessory.prototype = {
 
         service.setCharacteristic(Characteristic.Manufacturer, "Directv")
             .setCharacteristic(Characteristic.Name, this.name)
-			.setCharacteristic(Characteristic.SerialNumber, this.clientAddr)
-			.setCharacteristic(Characteristic.Model, this.ip_address);
+            .setCharacteristic(Characteristic.SerialNumber, this.clientAddr)
+            .setCharacteristic(Characteristic.Model, this.ip_address);
 
         services.push(service);
 
