@@ -7,11 +7,10 @@
 //     {
 //         "platform": "Directv",                // required
 //         "name": "DTV",                        // Optional - defaults to DTV
-//         "ip_address": "IP of Primary STB",     // required
-//          "compatibility", "genie or legacy",  // Optional, defaults to genie.  Pre-genie is "legacy".
-//           "exclude_geni": true,                // Optional - defaults to false
-//           "min_channel": 1,                    // Optional - defaults to 1
-//           "max_channel": 575                    // Optional - defaults to 575
+//         "ip_address": "IP of Primary STB",    // required
+//         "exclude_geni": true,                 // Optional - defaults to false
+//         "min_channel": 1,                     // Optional - defaults to 1
+//         "max_channel": 575                    // Optional - defaults to 575
 //     }
 // ],
 //
@@ -26,16 +25,75 @@ function DirectvPlatform(log, config){
     this.config = config;
     this.ip_address = config["ip_address"];
     this.name = config["name"] || 'DTV';
-        this.compatibility = config["compatibility"] || "genie";
+
+    // Typically defaults to 1, but we need to do some checking below.
+    // Older units won't accept anything but an undefined value.
+    this.compatType = undefined;
     this.excludeGeni = config["exclude_geni"] || false;
     min_ch = config["min_channel"] || 1;
     max_ch = config["max_channel"] || 575;
     this.log = log;
 
     if (!this.ip_address) throw new Error("DTV - You must provide a config value for 'ip_address'.");
-
+    var that=this;
+    // Determine compatibility type for /info/getLocations.
+    // Should only need to do this once per "root" STB.
+    // This means we'll have to iterate remotes each time we want to do this.  Oi.
     remote = new DirecTV.Remote(this.ip_address);
+    var response = undefined;
 
+    // getOptions expects a hash as input (despite the lack of argument):
+    //  var options = {
+    //    hostname: this.IP_ADDRESS,
+    //    port: 8080,
+    //    path: path
+    //};
+    // Will need to loop through every host setting up these to match the host (really, just IPs)
+    // then call get options one at a time.
+    remote.getOptions( function(err,response) {
+        if(!err){
+            optionsLabel:
+            {
+                for(var i=0; i <response.options.length; ++i){
+                    if (response.options[i].command=="/info/getLocations") {
+                        that.log("DTV Found /info/getLocations!  Has %s urlParameters.",response.options[i].urlParameters.length);
+                        urlParametersLabel:
+                        for(var paramIndex=0; paramIndex < response.options[i].urlParameters.length; ++paramIndex){
+                            that.log("DTV Checking response.options[%s].urlParameters[%s], with value %s",i,paramIndex,response.options[i].urlParameters[paramIndex]);
+                            if (!response.options[i].urlParameters[paramIndex].name){
+                                that.log("DTV STB at %s does not have a 'name' urlParameter.",that.ip_address);
+                                if(paramIndex < response.options[i].urlParameters.length){
+                                    continue;
+                                }
+                                else{
+                                    that.log("DTV STB at %s is a legacy STB, and undefined should be sent to getLocations()",that.ip_address);
+                                    break urlParametersLabel;
+                                }
+                            }
+                            else if (response.options[i].urlParameters[paramIndex].name == 'type') {
+                                // If .name has a value, we'll be sending ?type=1 on getLocations.
+                                that.log("DTV STB at %s is a modern STB, and we must submit 'type' to /info/getLocations!",that.ip_address);
+                                ++that.compatType;
+                                // No need to keep searching.
+                                break urlParametersLabel;
+                            }
+                        }
+                        // Once we have found the /info/getLocations command, there's no need to 
+                        // continue iterating.  This should break us out of the whole block.
+                        break optionsLabel;
+                    }
+                } // End optionsLabel block.
+            }
+        } else{
+            this.log( "DTV - failed to retrieve /info/getOptions for IP/hostname this.ip_address. Check IP address in config.json!");
+                try {
+                    callback(null);
+                }
+                catch(error) {
+                    that.log.debug('homebridge DTV Error', error);
+                }
+        }   
+    });
 }
 
 DirectvPlatform.prototype = {
@@ -43,18 +101,7 @@ DirectvPlatform.prototype = {
         this.log("Fetching DTV locations.");
         var that = this;
         var foundAccessories = [];
-        var compatType = undefined;
-            // Handling of presumed compatibility types on
-            // /info/getLocations
-            if (that.compatibility="legacy") {
-                compatType=undefined;
-            }
-            else if (that.compatibility="genie") {
-                compatType=1;
-            }
-            else {
-                compatType=1;
-            }
+
         remote.getLocations(that.compatType, function(err, response) {
             if (!err) {
                 that.log( "Finding DTV Locations (accessories)...");
@@ -282,7 +329,7 @@ module.exports = function(homebridge) {
 // we can only do this after we receive the homebridge API object
   makeChannelCharacteristic();
 
-  homebridge.registerAccessory("homebridge-directv-location", "DirectvSTB", DirectvSTBAccessory);
+  homebridge.registerAccessory("homebridge-directv", "DirectvSTB", DirectvSTBAccessory);
   homebridge.registerPlatform("homebridge-directv", "Directv", DirectvPlatform);
 };
 
